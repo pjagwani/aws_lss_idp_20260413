@@ -1,62 +1,46 @@
-import { CheckCircle, XCircle, Loader2, ArrowLeft, Clock, Brain, ShieldCheck, FileSearch } from 'lucide-react'
+import { CheckCircle, XCircle, Loader2, ArrowLeft, Clock } from 'lucide-react'
 
 const STAGE_META = {
-  extraction: { label: 'Extraction Agent', icon: FileSearch, desc: 'Reading handwritten fields' },
-  validation: { label: 'Validation Agent', icon: Brain, desc: 'Checking data integrity' },
-  compliance: { label: 'Compliance Agent', icon: ShieldCheck, desc: 'ALCOA+ scoring' },
+  extraction: { label: 'Extraction', desc: 'Reading handwritten fields' },
+  validation: { label: 'Validation', desc: 'Checking data integrity' },
+  compliance: { label: 'Compliance', desc: 'ALCOA+ scoring' },
 }
 
 function StageNode({ stageKey, data, index, total }) {
   const meta = STAGE_META[stageKey]
-  const Icon = meta.icon
   const status = data?.status || 'pending'
 
-  const ring = {
-    pending: 'border-slate-200 bg-slate-50 text-slate-400',
-    running: 'border-teal-500 bg-teal-50 text-teal-600 stage-active',
-    complete: 'border-emerald-500 bg-emerald-50 text-emerald-600',
-    error: 'border-red-500 bg-red-50 text-red-600',
-  }[status]
-
   return (
-    <div className="flex items-center gap-0">
-      <div className="flex flex-col items-center gap-2">
+    <div className="flex items-center">
+      <div className="flex flex-col items-center gap-2 min-w-[120px]">
         {/* Circle */}
         <div className={`
-          relative w-16 h-16 rounded-full border-2 flex items-center justify-center
-          transition-all duration-500 ${ring}
+          w-11 h-11 rounded-full flex items-center justify-center transition-all duration-500
+          ${status === 'pending' ? 'bg-neutral-100 text-neutral-400' : ''}
+          ${status === 'running' ? 'bg-neutral-900 text-white pulse-soft' : ''}
+          ${status === 'complete' ? 'bg-emerald-500 text-white' : ''}
+          ${status === 'error' ? 'bg-red-500 text-white' : ''}
         `}>
-          {status === 'running' && (
-            <div className="absolute inset-0 rounded-full animate-ping bg-teal-400/20" />
-          )}
-          {status === 'complete' ? (
-            <CheckCircle className="w-7 h-7 text-emerald-500" />
-          ) : status === 'error' ? (
-            <XCircle className="w-7 h-7 text-red-500" />
-          ) : status === 'running' ? (
-            <Loader2 className="w-7 h-7 animate-spin" />
-          ) : (
-            <Icon className="w-7 h-7" />
-          )}
+          {status === 'complete' ? <CheckCircle className="w-5 h-5" /> :
+           status === 'error' ? <XCircle className="w-5 h-5" /> :
+           status === 'running' ? <Loader2 className="w-5 h-5 animate-spin" /> :
+           <span className="text-[13px] font-semibold">{index + 1}</span>}
         </div>
-
-        {/* Label */}
         <div className="text-center">
-          <p className={`text-sm font-semibold ${status === 'running' ? 'text-teal-700' : status === 'complete' ? 'text-emerald-700' : 'text-slate-600'}`}>
-            {meta.label}
-          </p>
-          <p className="text-[11px] text-slate-400 mt-0.5">
+          <p className={`text-[13px] font-medium tracking-[-0.3px] ${
+            status === 'running' ? 'text-neutral-900' :
+            status === 'complete' ? 'text-emerald-700' : 'text-neutral-500'
+          }`}>{meta.label}</p>
+          <p className="text-[11px] text-neutral-400 mt-0.5 tracking-[-0.2px]">
             {data?.message || meta.desc}
           </p>
         </div>
       </div>
 
-      {/* Connector line */}
       {index < total - 1 && (
-        <div className={`
-          w-24 h-0.5 mx-4 mt-[-28px] transition-colors duration-500
-          ${status === 'complete' ? 'bg-emerald-400' : 'bg-slate-200'}
-        `} />
+        <div className={`w-16 h-px mx-2 mt-[-24px] transition-colors duration-500 ${
+          status === 'complete' ? 'bg-emerald-400' : 'bg-neutral-200'
+        }`} />
       )}
     </div>
   )
@@ -64,53 +48,41 @@ function StageNode({ stageKey, data, index, total }) {
 
 export default function PipelineView({ stages, stageData, pipelineState, duration, error, onReset }) {
   return (
-    <div className="mt-8">
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
-        {/* Top bar */}
+    <div className="mt-8 max-w-[800px] mx-auto">
+      <div className="glass rounded-2xl p-6">
         <div className="flex items-center justify-between mb-6">
+          <button
+            onClick={onReset}
+            className="flex items-center gap-1.5 text-[13px] text-neutral-500 hover:text-neutral-800 transition-colors tracking-[-0.2px]"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            New document
+          </button>
           <div className="flex items-center gap-3">
-            <button
-              onClick={onReset}
-              className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-teal-600 transition-colors"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              New Document
-            </button>
-          </div>
-
-          <div className="flex items-center gap-4">
             {duration && (
-              <span className="flex items-center gap-1.5 text-sm text-slate-500">
-                <Clock className="w-4 h-4" />
+              <span className="flex items-center gap-1 text-[12px] text-neutral-400">
+                <Clock className="w-3.5 h-3.5" />
                 {duration}s
               </span>
             )}
-            <span className={`
-              px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider
-              ${pipelineState === 'running' ? 'bg-teal-100 text-teal-700 animate-pulse' : ''}
-              ${pipelineState === 'complete' ? 'bg-emerald-100 text-emerald-700' : ''}
-              ${pipelineState === 'error' ? 'bg-red-100 text-red-700' : ''}
-            `}>
+            <span className={`px-3 py-1 rounded-full text-[11px] font-semibold uppercase tracking-wider ${
+              pipelineState === 'running' ? 'bg-neutral-900 text-white pulse-soft' :
+              pipelineState === 'complete' ? 'bg-emerald-50 text-emerald-700' :
+              'bg-red-50 text-red-700'
+            }`}>
               {pipelineState === 'running' ? 'Processing' : pipelineState === 'complete' ? 'Complete' : 'Error'}
             </span>
           </div>
         </div>
 
-        {/* Stage nodes */}
-        <div className="flex items-start justify-center py-4">
+        <div className="flex items-start justify-center py-2">
           {stages.map((key, i) => (
-            <StageNode
-              key={key}
-              stageKey={key}
-              data={stageData[key]}
-              index={i}
-              total={stages.length}
-            />
+            <StageNode key={key} stageKey={key} data={stageData[key]} index={i} total={stages.length} />
           ))}
         </div>
 
         {error && (
-          <div className="mt-4 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+          <div className="mt-4 p-3 rounded-xl bg-red-50 border border-red-100 text-[13px] text-red-700 tracking-[-0.2px]">
             {error}
           </div>
         )}

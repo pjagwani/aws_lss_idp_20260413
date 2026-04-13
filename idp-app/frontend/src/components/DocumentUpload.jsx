@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, FileText, FlaskConical, ArrowRight, Sparkles } from 'lucide-react'
+import { Upload, FileText, ArrowRight } from 'lucide-react'
 
 export default function DocumentUpload({ onProcess }) {
   const [samples, setSamples] = useState([])
@@ -23,19 +23,23 @@ export default function DocumentUpload({ onProcess }) {
     maxFiles: 1,
   })
 
+  const getDifficulty = (name) => {
+    if (name.includes('01') || name.includes('clean')) return { label: 'Clean', color: 'text-emerald-600 bg-emerald-50' }
+    if (name.includes('02') || name.includes('messy')) return { label: 'Messy', color: 'text-amber-600 bg-amber-50' }
+    if (name.includes('03') || name.includes('partial')) return { label: 'Partial', color: 'text-orange-600 bg-orange-50' }
+    return { label: 'Challenge', color: 'text-red-600 bg-red-50' }
+  }
+
   return (
-    <div className="mt-8 space-y-8">
-      {/* Hero */}
-      <div className="text-center max-w-2xl mx-auto">
-        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-teal-100 text-teal-800 text-sm font-medium mb-4">
-          <Sparkles className="w-4 h-4" />
-          Multi-Agent AI Pipeline
-        </div>
-        <h2 className="text-3xl font-bold text-slate-800 tracking-tight">
-          Upload a pharmaceutical document
+    <div className="max-w-[800px] mx-auto pt-20 pb-12">
+      {/* Hero text — joindex style: big serif + subtle body */}
+      <div className="text-center mb-12">
+        <h2 className="font-[DM_Serif_Display] text-[clamp(2rem,4.5vw,48px)] font-normal tracking-[-2px] text-neutral-950 leading-[1.1]">
+          Extract structured data from<br />handwritten pharma documents
         </h2>
-        <p className="mt-2 text-slate-500">
-          Three specialized agents extract, validate, and score your batch records for ALCOA+ compliance in real-time.
+        <p className="mt-4 text-[16px] text-neutral-400 tracking-[-0.3px] leading-relaxed max-w-lg mx-auto">
+          Three AI agents extract, validate, and score your batch records
+          for ALCOA+ compliance — powered by Amazon Bedrock.
         </p>
       </div>
 
@@ -43,78 +47,63 @@ export default function DocumentUpload({ onProcess }) {
       <div
         {...getRootProps()}
         className={`
-          relative max-w-2xl mx-auto rounded-2xl border-2 border-dashed p-12
-          transition-all duration-200 cursor-pointer group
-          ${isDragActive
-            ? 'border-teal-500 bg-teal-50 scale-[1.02]'
-            : 'border-slate-300 bg-white hover:border-teal-400 hover:bg-teal-50/50'}
+          glass rounded-2xl p-10 cursor-pointer group transition-all duration-200 hover-lift
+          ${isDragActive ? 'ring-2 ring-neutral-400 ring-offset-2' : ''}
         `}
       >
         <input {...getInputProps()} />
         <div className="flex flex-col items-center gap-4 text-center">
           <div className={`
-            w-16 h-16 rounded-2xl flex items-center justify-center
-            transition-colors duration-200
-            ${isDragActive ? 'bg-teal-500 text-white' : 'bg-teal-100 text-teal-600 group-hover:bg-teal-200'}
+            w-12 h-12 rounded-xl flex items-center justify-center transition-colors
+            ${isDragActive ? 'bg-neutral-900 text-white' : 'bg-neutral-100 text-neutral-500 group-hover:bg-neutral-200'}
           `}>
-            <Upload className="w-8 h-8" />
+            <Upload className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-lg font-semibold text-slate-700">
-              {isDragActive ? 'Drop your document here' : 'Drag & drop a document'}
+            <p className="text-[15px] font-medium text-neutral-700 tracking-[-0.3px]">
+              {isDragActive ? 'Drop your document here' : 'Drop a document here, or click to browse'}
             </p>
-            <p className="text-sm text-slate-400 mt-1">
-              PDF, PNG, or JPG &mdash; Batch Manufacturing Records, QC Forms
+            <p className="text-[13px] text-neutral-400 mt-1 tracking-[-0.2px]">
+              PDF, PNG, or JPG — Batch Manufacturing Records, QC Forms
             </p>
           </div>
         </div>
       </div>
 
-      {/* OR divider */}
-      <div className="flex items-center gap-4 max-w-2xl mx-auto">
-        <div className="flex-1 h-px bg-slate-200" />
-        <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">or choose a sample</span>
-        <div className="flex-1 h-px bg-slate-200" />
+      {/* Divider */}
+      <div className="flex items-center gap-4 my-8">
+        <div className="flex-1 h-px bg-neutral-200" />
+        <span className="text-[11px] font-medium text-neutral-400 uppercase tracking-widest">or choose a sample</span>
+        <div className="flex-1 h-px bg-neutral-200" />
       </div>
 
       {/* Sample cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 max-w-4xl mx-auto">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {loading ? (
-          Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="h-32 rounded-xl bg-slate-100 animate-pulse" />
+          Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-24 rounded-xl bg-neutral-100 animate-pulse" />
           ))
         ) : (
           samples.map((s) => {
-            const isClean = s.name.includes('01') || s.name.includes('clean')
-            const isMessy = s.name.includes('02') || s.name.includes('messy')
-            const isPartial = s.name.includes('03') || s.name.includes('partial')
-            const difficulty = isClean ? 'Easy' : isMessy ? 'Medium' : isPartial ? 'Hard' : 'Challenge'
-            const color = isClean ? 'emerald' : isMessy ? 'amber' : isPartial ? 'orange' : 'red'
-
+            const { label, color } = getDifficulty(s.name)
             return (
               <button
                 key={s.name}
                 onClick={() => onProcess(null, s.name)}
-                className="group text-left p-4 rounded-xl bg-white border border-slate-200
-                           hover:border-teal-300 hover:shadow-lg hover:shadow-teal-100/50
-                           transition-all duration-200"
+                className="glass text-left p-4 rounded-xl hover-lift group"
               >
-                <div className="flex items-start justify-between mb-3">
-                  <FileText className="w-8 h-8 text-teal-500" />
-                  <span className={`
-                    text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full
-                    ${color === 'emerald' ? 'bg-emerald-100 text-emerald-700' : ''}
-                    ${color === 'amber' ? 'bg-amber-100 text-amber-700' : ''}
-                    ${color === 'orange' ? 'bg-orange-100 text-orange-700' : ''}
-                    ${color === 'red' ? 'bg-red-100 text-red-700' : ''}
-                  `}>
-                    {difficulty}
+                <div className="flex items-start justify-between mb-2">
+                  <FileText className="w-5 h-5 text-neutral-400" />
+                  <span className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full ${color}`}>
+                    {label}
                   </span>
                 </div>
-                <p className="text-sm font-semibold text-slate-700 truncate">{s.name}</p>
-                <p className="text-xs text-slate-400 mt-1">{(s.size / 1024).toFixed(1)} KB</p>
-                <div className="mt-3 flex items-center gap-1 text-xs font-medium text-teal-600 opacity-0 group-hover:opacity-100 transition-opacity">
-                  Process <ArrowRight className="w-3 h-3" />
+                <p className="text-[13px] font-medium text-neutral-700 tracking-[-0.2px] truncate">{s.name}</p>
+                <div className="flex items-center justify-between mt-2">
+                  <p className="text-[11px] text-neutral-400">{(s.size / 1024).toFixed(1)} KB</p>
+                  <span className="text-[11px] font-medium text-neutral-400 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    Process <ArrowRight className="w-3 h-3" />
+                  </span>
                 </div>
               </button>
             )
