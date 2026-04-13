@@ -1,0 +1,38 @@
+{
+  "confidence_thresholds": {
+    "critical_fields": 0.90,
+    "standard_fields": 0.70,
+    "flag_for_review": 0.70
+  },
+  "critical_field_names": [
+    "batch_number", "product_name", "mfg_date",
+    "equipment_ids", "ingredients"
+  ],
+  "anomaly_detection": {
+    "quantity_deviation_pct": 5.0,
+    "shift_hours_start": "06:00",
+    "shift_hours_end": "22:00",
+    "severity_levels": ["low", "medium", "high", "critical"]
+  },
+  "retry": {
+    "max_attempts": 3,
+    "base_delay_seconds": 1.0,
+    "max_delay_seconds": 10.0
+  },
+  "performance": {
+    "target_docs_per_hour": 100,
+    "max_concurrent_documents": 50,
+    "upload_response_target_seconds": 10,
+    "page_chunk_size": 20,
+    "max_pages_before_chunking": 100
+  },
+  "security": {
+    "session_timeout_minutes": 30,
+    "roles": ["viewer", "reviewer", "admin"]
+  },
+  "alert_recipients": [],
+  "model_pinning": {
+    "default_model": "us.anthropic.claude-sonnet-4-6",
+    "fallback_model": "amazon.nova-pro-v1:0"
+  }
+}

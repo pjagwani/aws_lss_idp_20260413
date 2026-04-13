@@ -8,15 +8,22 @@ The agent answers based on extracted document data, not general knowledge.
 Tech Stack: Strands Agents SDK + BDA MCP Server + Amazon Bedrock AgentCore + Streamlit
 """
 
+import os
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
+
 import streamlit as st
 import json
-import os
 import base64
 import re
 import csv
 import io
 import hashlib
 from datetime import datetime, timezone
+
+from lib import config_loader, persistence, validator
+from lib.retry import with_retry
+from lib.chunker import get_page_count
 
 
 # ---------------------------------------------------------------------------
@@ -514,18 +521,34 @@ defaults = {
     "agent_initialised": False,
     "audit_trail": [],
     "extraction_count": 0,
-    "review_status": None,  # None | "approved" | "rejected"
+    "review_status": None,
     "session_start": datetime.now(timezone.utc).isoformat(),
     "doc_hash": None,
+    "last_activity": datetime.now(timezone.utc).isoformat(),
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "page_count": None,
+    "validation_report": None,
+    "corrections": {},
 }
 for key, val in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = val
 
+# Session timeout check
+_timeout_min = config_loader.get_nested("security", "session_timeout_minutes", default=30)
+_last = datetime.fromisoformat(st.session_state.last_activity)
+if (datetime.now(timezone.utc) - _last).total_seconds() > _timeout_min * 60:
+    for k, v in defaults.items():
+        st.session_state[k] = v if not isinstance(v, list) else []
+    st.session_state["session_start"] = datetime.now(timezone.utc).isoformat()
+st.session_state.last_activity = datetime.now(timezone.utc).isoformat()
 
-def log_audit(action: str):
+
+def log_audit(action: str, details: dict | None = None):
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
     st.session_state.audit_trail.append({"time": ts, "action": action})
+    persistence.log_audit(action, details)
 
 
 # ---------------------------------------------------------------------------
@@ -847,12 +870,21 @@ def send_question_bedrock_fallback(question, document_bytes, conversation_histor
             "specification_limit, pass_fail), inspector_name, inspection_date."
         )
 
-        response = client.converse(
-            modelId=model_id,
-            system=[{"text": system_text}],
-            messages=[{"role": "user", "content": content_blocks}],
-            inferenceConfig={"maxTokens": 4096, "temperature": 0.0},
-        )
+        def _call():
+            return client.converse(
+                modelId=model_id,
+                system=[{"text": system_text}],
+                messages=[{"role": "user", "content": content_blocks}],
+                inferenceConfig={"maxTokens": 4096, "temperature": 0.0},
+            )
+
+        response = with_retry(_call, context=f"bedrock:{model_id}")
+
+        # Track token usage
+        usage = response.get("usage", {})
+        st.session_state.total_input_tokens += usage.get("inputTokens", 0)
+        st.session_state.total_output_tokens += usage.get("outputTokens", 0)
+
         parts = []
         for block in response["output"]["message"]["content"]:
             if "text" in block:
@@ -1028,8 +1060,22 @@ if uploaded_file is not None:
         st.session_state.conversation_history = []
         st.session_state.extracted_data = None
         st.session_state.review_status = None
-        st.session_state.doc_hash = hashlib.sha256(file_bytes).hexdigest()[:16]
-        log_audit(f"Upload: {uploaded_file.name} (sha256:{st.session_state.doc_hash}, {len(file_bytes)} bytes)")
+        st.session_state.validation_report = None
+        st.session_state.corrections = {}
+        st.session_state.doc_hash = persistence.compute_hash(file_bytes)
+        # Page count for PDFs
+        if uploaded_file.name.lower().endswith(".pdf"):
+            try:
+                st.session_state.page_count = get_page_count(file_bytes)
+            except Exception:
+                st.session_state.page_count = None
+        else:
+            st.session_state.page_count = 1
+        log_audit(f"Upload: {uploaded_file.name}", {
+            "hash": st.session_state.doc_hash,
+            "size_bytes": len(file_bytes),
+            "pages": st.session_state.page_count,
+        })
         st.rerun()
 
 # ---------------------------------------------------------------------------
@@ -1064,12 +1110,37 @@ if prompt := st.chat_input("Ask about the uploaded document - e.g. 'Extract all 
                     {"role": "assistant", "content": response}
                 )
                 st.session_state.extraction_count += 1
-                log_audit(f"Extraction OK (model={model_id})")
 
                 # Cache extracted JSON if parseable
                 parsed = extract_json_from_response(response)
                 if parsed:
                     st.session_state.extracted_data = parsed
+                    # Run Python-side validation
+                    val_report = validator.validate(parsed)
+                    st.session_state.validation_report = val_report
+                    # Persist to disk
+                    persistence.save_extraction(
+                        st.session_state.document_name or "unknown",
+                        st.session_state.doc_hash or "",
+                        model_id, parsed,
+                        {"principles": val_report.principles, "composite": val_report.composite_confidence},
+                        {"input": st.session_state.total_input_tokens, "output": st.session_state.total_output_tokens},
+                    )
+                    persistence.save_validation(
+                        st.session_state.document_name or "unknown",
+                        st.session_state.doc_hash or "",
+                        {"principles": val_report.principles, "flagged": val_report.flagged_for_review},
+                    )
+                    persistence.save_model_metrics(
+                        model_id, "bmr", val_report.composite_confidence,
+                        len(val_report.all_confidences),
+                        sum(1 for i in val_report.issues if i.severity in ("high", "critical")),
+                    )
+
+                log_audit(f"Extraction OK (model={model_id})", {
+                    "tokens_in": st.session_state.total_input_tokens,
+                    "tokens_out": st.session_state.total_output_tokens,
+                })
 
             except TimeoutError:
                 st.error("The agent is taking longer than expected. Please try again.")
@@ -1085,130 +1156,103 @@ if prompt := st.chat_input("Ask about the uploaded document - e.g. 'Extract all 
 if st.session_state.extracted_data and st.session_state.document_bytes:
     st.markdown('<div class="divider-gradient"></div>', unsafe_allow_html=True)
 
-    tool_tabs = st.tabs(["ALCOA+ Compliance", "Monitoring", "Export Data", "Quick Prompts"])
+    tool_tabs = st.tabs(["ALCOA+ Compliance", "Monitoring", "Corrections", "Export Data", "Quick Prompts"])
 
-    # -- Helper: walk extracted data for confidence values --
+    # Use the validator for all analysis
+    val_rpt = st.session_state.validation_report
+    if val_rpt is None:
+        val_rpt = validator.validate(st.session_state.extracted_data)
+        st.session_state.validation_report = val_rpt
+
     data = st.session_state.extracted_data
     raw_fields = data if not isinstance(data, dict) else data.get("batch_record", data.get("extracted_fields", data))
-    all_confidences: list[float] = []
-    low_conf_fields: list[tuple[str, float]] = []
-    null_fields: list[str] = []
 
-    def _walk(obj, prefix=""):
-        if isinstance(obj, dict):
-            # Check for {"value": ..., "confidence": ...} pattern
-            if "confidence" in obj and "value" in obj:
-                c = obj["confidence"]
-                if isinstance(c, (int, float)):
-                    all_confidences.append(float(c))
-                    if c < 0.70:
-                        low_conf_fields.append((prefix, float(c)))
-                if obj["value"] is None:
-                    null_fields.append(prefix)
-                return
-            for k, v in obj.items():
-                _walk(v, f"{prefix}.{k}" if prefix else k)
-        elif isinstance(obj, list):
-            for i, item in enumerate(obj):
-                _walk(item, f"{prefix}[{i}]")
-        elif obj is None and prefix:
-            null_fields.append(prefix)
-
-    if isinstance(raw_fields, dict):
-        _walk(raw_fields)
-
-    composite_conf = sum(all_confidences) / len(all_confidences) if all_confidences else None
-    anomalies_data = data.get("anomalies", []) if isinstance(data, dict) else []
-    flagged = data.get("flagged_for_review", False) if isinstance(data, dict) else False
-
-    # -- ALCOA+ Compliance Report (full 9 principles) --
+    # -- ALCOA+ Compliance Report (full 9 principles via validator) --
     with tool_tabs[0]:
-        def _has(key):
-            if isinstance(raw_fields, dict):
-                v = raw_fields.get(key)
-                if isinstance(v, dict):
-                    return v.get("value") is not None
-                return v is not None
-            return False
-
-        has_operator = _has("operator") or _has("operator_initials")
-        has_timestamp = _has("start_timestamp") or _has("mfg_date")
-        legible = all(c >= 0.70 for c in all_confidences) if all_confidences else True
-        accurate = all(c >= 0.90 for c in all_confidences) if all_confidences else True
-        complete = len(null_fields) == 0
-
-        principles = [
-            ("Attributable", "Every entry has operator identification",
-             ("pass", "PASS") if has_operator else ("warn", "MISSING")),
-            ("Legible", "All fields confidence >= 0.70",
-             ("pass", "PASS") if legible else ("warn", f"{len(low_conf_fields)} LOW")),
-            ("Contemporaneous", "Timestamps present and valid",
-             ("pass", "PASS") if has_timestamp else ("warn", "MISSING")),
-            ("Original", "Source document preserved with audit trail",
-             ("pass", "PASS")),
-            ("Accurate", "Critical fields confidence >= 0.90",
-             ("pass", "PASS") if accurate else ("warn", "REVIEW")),
-            ("Complete", "All required fields present",
-             ("pass", "PASS") if complete else ("warn", f"{len(null_fields)} NULL")),
-            ("Consistent", "No contradictory data detected",
-             ("pass", "PASS") if not anomalies_data else ("warn", f"{len(anomalies_data)} ANOMALY")),
-            ("Enduring", "Data persisted in immutable audit log",
-             ("pass", "PASS")),
-            ("Available", "Data accessible for review and export",
-             ("pass", "PASS")),
-        ]
-
-        pass_count = sum(1 for _, _, (s, _) in principles if s == "pass")
-        total = len(principles)
-
         st.markdown(
             f'<div class="alcoa-card"><h4>ALCOA+ Compliance Report '
-            f'({pass_count}/{total} principles met)</h4>',
+            f'({val_rpt.pass_count}/{val_rpt.total_principles} principles met)</h4>',
             unsafe_allow_html=True,
         )
-        for name, desc, (status, label) in principles:
+        for name, passed in val_rpt.principles.items():
+            desc_map = {
+                "Attributable": "Every entry has operator identification",
+                "Legible": f"All fields confidence >= {config_loader.get_nested('confidence_thresholds', 'standard_fields', default=0.70)}",
+                "Contemporaneous": "Timestamps present, valid, and within shift hours",
+                "Original": "Source document preserved with page references",
+                "Accurate": f"Critical fields confidence >= {config_loader.get_nested('confidence_thresholds', 'critical_fields', default=0.90)}",
+                "Complete": "All required fields present (no nulls)",
+                "Consistent": "No contradictory data or anomalies detected",
+                "Enduring": "Data persisted in immutable audit log on disk",
+                "Available": "Data accessible for review, export, and API",
+            }
+            status = "pass" if passed else "warn"
+            label = "PASS" if passed else "FAIL"
             st.markdown(
                 f'<div class="alcoa-row">'
                 f'<div><div class="alcoa-principle">{name}</div>'
-                f'<div class="alcoa-desc">{desc}</div></div>'
+                f'<div class="alcoa-desc">{desc_map.get(name, "")}</div></div>'
                 f'<span class="alcoa-status alcoa-{status}">{label}</span>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
         st.markdown('</div>', unsafe_allow_html=True)
 
-        # Anomaly alerts
-        if anomalies_data:
+        # Anomaly alerts with severity
+        if val_rpt.anomalies:
             st.markdown("**Anomalies Detected:**")
-            for a in anomalies_data:
-                if isinstance(a, str):
-                    st.warning(a)
-                elif isinstance(a, dict):
-                    st.warning(f"{a.get('severity', 'medium').upper()}: {a.get('description', a)}")
+            for a in val_rpt.anomalies:
+                sev = a.severity.upper()
+                if a.severity == "critical":
+                    st.error(f"CRITICAL: {a.description} (field: {a.field})")
+                elif a.severity == "high":
+                    st.error(f"HIGH: {a.description} (field: {a.field})")
+                elif a.severity == "medium":
+                    st.warning(f"MEDIUM: {a.description} (field: {a.field})")
+                else:
+                    st.info(f"LOW: {a.description} (field: {a.field})")
 
-        if low_conf_fields:
-            st.markdown("**Low-Confidence Fields (< 0.70):**")
-            for field_name, conf in low_conf_fields:
+        if val_rpt.low_confidence_fields:
+            st.markdown("**Low-Confidence Fields:**")
+            for field_name, conf in val_rpt.low_confidence_fields:
                 st.warning(f"`{field_name}` -- confidence: {conf:.2f}")
+
+        if val_rpt.issues:
+            with st.expander(f"All Validation Issues ({len(val_rpt.issues)})"):
+                for issue in val_rpt.issues:
+                    st.text(f"[{issue.severity.upper()}] {issue.principle}: {issue.field} - {issue.description}")
 
     # -- Monitoring Dashboard --
     with tool_tabs[1]:
         m1, m2, m3, m4 = st.columns(4)
         with m1:
-            st.metric("Composite Confidence", f"{composite_conf:.1%}" if composite_conf else "N/A")
+            st.metric("Composite Confidence", f"{val_rpt.composite_confidence:.1%}" if val_rpt.composite_confidence else "N/A")
         with m2:
-            st.metric("Fields Extracted", str(len(all_confidences)) if all_confidences else str(len(raw_fields) if isinstance(raw_fields, dict) else 0))
+            st.metric("Fields Extracted", str(len(val_rpt.all_confidences)))
         with m3:
-            st.metric("Flagged for Review", "Yes" if flagged or low_conf_fields else "No")
+            st.metric("Flagged for Review", "Yes" if val_rpt.flagged_for_review else "No")
         with m4:
-            st.metric("Null Fields", str(len(null_fields)))
+            st.metric("Null Fields", str(len(val_rpt.null_fields)))
 
-        if all_confidences:
+        # Token usage
+        t1, t2, t3, t4 = st.columns(4)
+        with t1:
+            st.metric("Input Tokens", f"{st.session_state.total_input_tokens:,}")
+        with t2:
+            st.metric("Output Tokens", f"{st.session_state.total_output_tokens:,}")
+        with t3:
+            pages = st.session_state.page_count
+            st.metric("Pages", str(pages) if pages else "N/A")
+        with t4:
+            session_start = datetime.fromisoformat(st.session_state.session_start)
+            elapsed_hrs = max((datetime.now(timezone.utc) - session_start).total_seconds() / 3600, 0.001)
+            docs_per_hr = st.session_state.extraction_count / elapsed_hrs
+            st.metric("Docs/Hour", f"{docs_per_hr:.1f}")
+
+        if val_rpt.all_confidences:
             st.markdown('<p class="section-label">Field Confidence Distribution</p>', unsafe_allow_html=True)
-            # Build a simple bar chart of confidence values
-            import math
             buckets = {"0.9-1.0": 0, "0.7-0.9": 0, "< 0.7": 0}
-            for c in all_confidences:
+            for c in val_rpt.all_confidences:
                 if c >= 0.90:
                     buckets["0.9-1.0"] += 1
                 elif c >= 0.70:
@@ -1217,32 +1261,21 @@ if st.session_state.extracted_data and st.session_state.document_bytes:
                     buckets["< 0.7"] += 1
             st.bar_chart(buckets)
 
-            if composite_conf and composite_conf < 0.70:
-                st.error("ALERT: Composite confidence below 0.70 threshold. This document requires manual review.")
-            elif composite_conf and composite_conf < 0.90:
-                st.warning("Some critical fields may need human verification (confidence < 0.90).")
+            if val_rpt.composite_confidence and val_rpt.composite_confidence < 0.70:
+                st.error("ALERT: Composite confidence below 0.70. Manual review required.")
+            elif val_rpt.composite_confidence and val_rpt.composite_confidence < 0.90:
+                st.warning("Some critical fields may need human verification.")
             else:
                 st.success("All extracted fields meet confidence thresholds.")
 
-        # Docs/hour throughput
-        st.markdown('<p class="section-label">Session Throughput</p>', unsafe_allow_html=True)
-        session_start = datetime.fromisoformat(st.session_state.session_start)
-        elapsed_hrs = max((datetime.now(timezone.utc) - session_start).total_seconds() / 3600, 0.001)
-        docs_per_hr = st.session_state.extraction_count / elapsed_hrs
+        # Historical model metrics
+        hist_metrics = persistence.get_model_metrics()
+        if len(hist_metrics) > 1:
+            st.markdown('<p class="section-label">Model Accuracy Trend</p>', unsafe_allow_html=True)
+            trend = [m["composite_confidence"] for m in hist_metrics if m.get("composite_confidence")]
+            st.line_chart(trend)
 
-        st.markdown(
-            f'<div class="metric-row"><span class="metric-label">Documents processed</span>'
-            f'<span class="metric-value">1</span></div>'
-            f'<div class="metric-row"><span class="metric-label">Total extractions</span>'
-            f'<span class="metric-value">{st.session_state.extraction_count}</span></div>'
-            f'<div class="metric-row"><span class="metric-label">Docs/hour</span>'
-            f'<span class="metric-value">{docs_per_hr:.1f}</span></div>'
-            f'<div class="metric-row"><span class="metric-label">Audit events</span>'
-            f'<span class="metric-value">{len(st.session_state.audit_trail)}</span></div>',
-            unsafe_allow_html=True,
-        )
-
-        # Approve / Reject buttons
+        # Approve / Reject
         st.markdown('<p class="section-label">Review Decision</p>', unsafe_allow_html=True)
         rcol1, rcol2, rcol3 = st.columns([1, 1, 2])
         with rcol1:
@@ -1260,13 +1293,48 @@ if st.session_state.extracted_data and st.session_state.document_bytes:
             if status == "approved":
                 st.success("Batch record APPROVED")
             elif status == "rejected":
-                st.error("Batch record REJECTED - requires re-review")
+                st.error("Batch record REJECTED")
             else:
                 st.info("Pending review")
 
-    # -- Export Data --
+    # -- Corrections (Human Review) --
     with tool_tabs[2]:
-        ecol1, ecol2 = st.columns(2)
+        st.markdown("Edit extracted fields below. Corrections are logged to the audit trail and saved as training data.")
+        if isinstance(raw_fields, dict):
+            for key, val in raw_fields.items():
+                if isinstance(val, dict) and "value" in val:
+                    conf = val.get("confidence", 1.0)
+                    color = "red" if conf < 0.70 else ("orange" if conf < 0.90 else "green")
+                    current = st.session_state.corrections.get(key, val["value"])
+                    col_a, col_b = st.columns([4, 1])
+                    with col_a:
+                        new_val = st.text_input(
+                            f"{key} (conf: {conf:.2f})",
+                            value=str(current) if current is not None else "",
+                            key=f"corr_{key}",
+                        )
+                    with col_b:
+                        st.markdown(f'<span style="color:{color};font-weight:700;">{conf:.2f}</span>', unsafe_allow_html=True)
+                    if new_val != str(val["value"] or ""):
+                        st.session_state.corrections[key] = new_val
+
+            if st.button("Save Corrections"):
+                for field_key, new_value in st.session_state.corrections.items():
+                    original = raw_fields.get(field_key, {}).get("value") if isinstance(raw_fields.get(field_key), dict) else raw_fields.get(field_key)
+                    if str(original) != str(new_value):
+                        persistence.save_correction(
+                            st.session_state.document_name or "unknown",
+                            st.session_state.doc_hash or "",
+                            field_key, original, new_value,
+                        )
+                st.success(f"Saved {len(st.session_state.corrections)} correction(s)")
+                log_audit("Corrections saved", {"count": len(st.session_state.corrections)})
+        else:
+            st.info("Extract data with confidence scores first to enable field-level corrections.")
+
+    # -- Export Data --
+    with tool_tabs[3]:
+        ecol1, ecol2, ecol3 = st.columns(3)
         with ecol1:
             json_str = json.dumps(st.session_state.extracted_data, indent=2)
             st.download_button(
@@ -1276,49 +1344,56 @@ if st.session_state.extracted_data and st.session_state.document_bytes:
                 mime="application/json",
             )
         with ecol2:
-            # Flatten to CSV
             flat = st.session_state.extracted_data
             if isinstance(flat, dict):
                 flat = flat.get("batch_record", flat.get("extracted_fields", flat))
-
             buf = io.StringIO()
             writer = csv.writer(buf)
-            writer.writerow(["Field", "Value", "Confidence"])
+            writer.writerow(["Field", "Value", "Confidence", "Source Page"])
             if isinstance(flat, dict):
                 for k, v in flat.items():
                     if isinstance(v, dict) and "value" in v:
-                        writer.writerow([k, v["value"], v.get("confidence", "")])
+                        writer.writerow([k, v["value"], v.get("confidence", ""), v.get("source_page", "")])
                     elif isinstance(v, (list, dict)):
-                        writer.writerow([k, json.dumps(v), ""])
+                        writer.writerow([k, json.dumps(v), "", ""])
                     else:
-                        writer.writerow([k, v, ""])
-
+                        writer.writerow([k, v, "", ""])
             st.download_button(
                 label="Download CSV",
                 data=buf.getvalue(),
                 file_name=f"{st.session_state.document_name or 'extraction'}.csv",
                 mime="text/csv",
             )
+        with ecol3:
+            # Audit trail export (both JSON and CSV)
+            all_audit = persistence.get_audit_trail()
+            if all_audit:
+                st.download_button(
+                    label="Audit Trail (JSON)",
+                    data=json.dumps(all_audit, indent=2),
+                    file_name="audit_trail.json",
+                    mime="application/json",
+                )
 
-        # Audit trail export
-        if st.session_state.audit_trail:
-            audit_json = json.dumps(st.session_state.audit_trail, indent=2)
+        # Training data export
+        training_data = persistence.export_training_jsonl()
+        if training_data.strip():
             st.download_button(
-                label="Download Audit Trail",
-                data=audit_json,
-                file_name="audit_trail.json",
-                mime="application/json",
+                label="Training Data (JSONL)",
+                data=training_data,
+                file_name="training_corrections.jsonl",
+                mime="application/jsonl",
             )
 
     # -- Quick Prompts --
-    with tool_tabs[3]:
+    with tool_tabs[4]:
         prompts = [
-            "Extract all fields from this batch manufacturing record as structured JSON with confidence scores (0.0-1.0) for each field, composite_confidence, and flag any anomalies",
+            "Extract all fields from this batch manufacturing record as structured JSON with confidence scores (0.0-1.0) for each field, source_page numbers, composite_confidence, and flag any anomalies with severity levels (low/medium/high/critical)",
             "What is the batch number and product name?",
             "List all ingredients with their weights, units, and lot numbers",
             "Are there any missing or illegible fields? List them with severity",
-            "Flag any anomalies: missing signatures, timestamps outside normal hours, quantity deviations > 5%",
-            "Generate a full ALCOA+ compliance assessment for this document",
+            "Flag any anomalies: missing signatures, timestamps outside shift hours (06:00-22:00), quantity deviations > 5%",
+            "Generate a full ALCOA+ compliance assessment covering all 9 principles",
         ]
         for p in prompts:
             st.code(p, language=None)

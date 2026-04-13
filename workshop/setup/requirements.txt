@@ -5,3 +5,9 @@ boto3
 bedrock-agentcore[strands-agents]
 mcp
 httpx
+fastapi
+uvicorn
+pypdf
+reportlab
+openpyxl
+fpdf2
