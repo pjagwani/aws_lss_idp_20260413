@@ -27,6 +27,16 @@
       "populated_fields": ["product_name", "batch_number", "ingredients", "operator_initials"],
       "missing_fields": ["equipment_ids", "start_timestamp", "end_timestamp"],
       "expected_reference": "bmr-sample-03-partial-expected.json"
+    },
+    {
+      "filename": "bmr/batch record 004.pdf",
+      "document_type": "batch_manufacturing_record",
+      "difficulty": "hard",
+      "use_case": "bmr",
+      "description": "Real manufacturing batch record with mixed printed/handwritten content, barcodes, multiple material labels, and complex layout",
+      "populated_fields": ["product_name", "batch_number", "mbr_number", "batch_size_kg", "materials", "handwritten_fields", "expiry_date"],
+      "missing_fields": [],
+      "expected_reference": "batch-record-004-expected.json"
     }
   ]
 }

@@ -1,0 +1,54 @@
+{
+  "document_type": "batch_manufacturing_record",
+  "source_file": "batch record 004.pdf",
+  "extracted_fields": {
+    "product_name": "20.0% (w/w) OmniShield 0.125% (w/w) Ivermectin Soft Chewable Tablets for Dogs",
+    "batch_number": "035911",
+    "mbr_number": "M0412",
+    "batch_size_kg": 600,
+    "facility": "AH-M0880 FLEx Center",
+    "page": "42 of 130",
+    "step": "C. Unit Op: Instructions for Batch Manufacture",
+    "step_section": "Labels (cont.)",
+    "expiry_date": "2027-09-09",
+    "materials": [
+      {
+        "material_number": "628475",
+        "description": "Dicalcium Phosphate Dihydrate Di-Tab Grade",
+        "batch_number": "0000648204",
+        "vendor_batch": "445MN17",
+        "quantity": 4.100,
+        "unit": "KG",
+        "po_number": "/00000"
+      },
+      {
+        "material_number": "S5317094",
+        "description": "Talc Pharmaceutical Grade",
+        "batch_id": "80019553-U",
+        "quantity": 910.800,
+        "unit": "G"
+      },
+      {
+        "material_number": "1013178964",
+        "description": "Polyvinyl Pyrrolidone K30",
+        "process_order": "RY550-EF",
+        "quantity": 5120.0,
+        "unit": "G"
+      }
+    ],
+    "handwritten_fields": {
+      "batch_number_handwritten": "24090733",
+      "tare_weight_kg": 0.441,
+      "performed_by": "CB",
+      "performed_date": "2024-09-07",
+      "verified_by": "FH",
+      "verified_date": "2024-09-07"
+    },
+    "additional_identifiers": [
+      "96441023",
+      "0001872346",
+      "1013171802"
+    ],
+    "sop_reference": "SOP-015203847 Ver 4.0"
+  }
+}
