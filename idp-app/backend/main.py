@@ -495,6 +495,259 @@ async def chat_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# Feature: Cross-Batch Anomaly Detection
+# ---------------------------------------------------------------------------
+def make_anomaly_agent() -> Agent:
+    return Agent(
+        model=make_model(),
+        system_prompt=(
+            "You are the Cross-Batch Anomaly Detection Agent for pharmaceutical manufacturing.\n\n"
+            "You receive the current batch extraction AND historical extraction data from previous batches.\n"
+            "Your job is to find statistical outliers and suspicious patterns.\n\n"
+            "CHECKS:\n"
+            "1. Weight deviations: Flag any ingredient weight that differs >5% from the average of previous batches for the same product.\n"
+            "2. Operator patterns: Flag if an operator has appeared with low-confidence fields in multiple batches.\n"
+            "3. Equipment correlation: Flag equipment IDs associated with previous deviations.\n"
+            "4. Timing anomalies: Flag unusual batch durations compared to historical norms.\n"
+            "5. Missing fields: Flag if fields present in previous batches are missing in the current one.\n\n"
+            "Return ONLY valid JSON:\n"
+            '{"anomalies":[{"type":"weight_deviation|operator_pattern|equipment_risk|timing_anomaly|missing_field",'
+            '"field":"...","current_value":"...","historical_average":"...","deviation_pct":N,'
+            '"severity":"low|medium|high|critical","description":"..."}],'
+            '"batch_comparison":{"current_batch":"...","compared_against":N,"product_match":true|false},'
+            '"risk_summary":"...","overall_risk":"low|medium|high|critical"}'
+        ),
+    )
+
+
+@app.post("/api/cross-batch-analysis")
+async def cross_batch_analysis(
+    extraction_data: str = Form(...),
+    filename: str = Form(""),
+):
+    ext = json.loads(extraction_data)
+    memory_history = await asyncio.to_thread(
+        recall_from_memory,
+        f"batch extraction history for {ext.get('product_name', {}).get('value', 'pharmaceutical product')}"
+    )
+
+    agent = make_anomaly_agent()
+    prompt = (
+        f"Analyze this batch extraction for anomalies compared to historical data.\n\n"
+        f"CURRENT BATCH ({filename}):\n{json.dumps(ext, indent=2)}\n\n"
+        f"HISTORICAL DATA:\n{memory_history or 'No previous batches found — this is the first extraction. Report that no comparison is possible yet but analyze the current batch for internal consistency.'}"
+    )
+
+    try:
+        raw = await asyncio.to_thread(call_strands_agent, agent, prompt)
+        return {"result": parse_json_response(raw)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Feature: Auto-Generated Deviation Reports (FDA 483-ready)
+# ---------------------------------------------------------------------------
+def make_deviation_report_agent() -> Agent:
+    return Agent(
+        model=make_model(),
+        system_prompt=(
+            "You are a GMP Deviation Report Writer for pharmaceutical manufacturing.\n\n"
+            "Generate a formal deviation report suitable for FDA 483 response. Follow 21 CFR Part 211.\n\n"
+            "REPORT STRUCTURE:\n"
+            "1. Deviation ID and classification (minor/major/critical)\n"
+            "2. Description of the deviation\n"
+            "3. Root cause analysis (use 5-Why methodology)\n"
+            "4. Impact assessment (product quality, patient safety, data integrity)\n"
+            "5. Immediate corrective actions taken\n"
+            "6. CAPA (Corrective and Preventive Actions) with deadlines\n"
+            "7. Regulatory references (21 CFR Part 211 sections)\n"
+            "8. Risk assessment (probability x severity matrix)\n\n"
+            "Return ONLY valid JSON:\n"
+            '{"report_id":"DEV-YYYY-NNNN","classification":"minor|major|critical",'
+            '"batch_info":{"product":"...","batch_number":"...","date":"..."},'
+            '"deviations":[{"id":"DEV-N","description":"...","root_cause_analysis":{"why_1":"...","why_2":"...","why_3":"...","why_4":"...","why_5":"...","root_cause":"..."},'
+            '"impact_assessment":{"product_quality":"...","patient_safety":"...","data_integrity":"..."},'
+            '"immediate_actions":["..."],'
+            '"capa":[{"action":"...","responsible":"...","deadline":"...","type":"corrective|preventive"}],'
+            '"regulatory_refs":["21 CFR 211.XX - description"],'
+            '"risk_score":{"probability":1-5,"severity":1-5,"rpn":1-25}}],'
+            '"overall_risk":"low|medium|high|critical",'
+            '"reviewer_notes":"...","report_date":"..."}'
+        ),
+    )
+
+
+@app.post("/api/deviation-report")
+async def deviation_report(
+    extraction_data: str = Form(...),
+    validation_data: str = Form("{}"),
+    compliance_data: str = Form("{}"),
+    filename: str = Form(""),
+):
+    ext = json.loads(extraction_data)
+    val = json.loads(validation_data)
+    comp = json.loads(compliance_data)
+
+    agent = make_deviation_report_agent()
+    prompt = (
+        f"Generate a formal FDA 483-ready deviation report for batch record: {filename}\n\n"
+        f"EXTRACTED DATA:\n{json.dumps(ext, indent=2)}\n\n"
+        f"VALIDATION RESULTS:\n{json.dumps(val, indent=2)}\n\n"
+        f"COMPLIANCE RESULTS:\n{json.dumps(comp, indent=2)}\n\n"
+        f"Focus on any deviations found in the compliance assessment. "
+        f"Use today's date for the report. Generate realistic CAPA actions with 30/60/90 day deadlines."
+    )
+
+    try:
+        raw = await asyncio.to_thread(call_strands_agent, agent, prompt)
+        return {"result": parse_json_response(raw)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Feature: Handwriting Quality Scoring
+# ---------------------------------------------------------------------------
+def make_handwriting_agent() -> Agent:
+    return Agent(
+        model=make_model(),
+        system_prompt=(
+            "You are a Handwriting Quality Assessment Agent for pharmaceutical documents.\n\n"
+            "Analyze the extraction confidence scores to assess handwriting quality.\n"
+            "Score each field's legibility and provide an overall operator handwriting score.\n\n"
+            "SCORING CRITERIA:\n"
+            "- Character clarity: Are individual characters distinct and unambiguous?\n"
+            "- Consistency: Is the writing style consistent throughout the document?\n"
+            "- Completeness: Are all required fields filled with readable text?\n"
+            "- Ink quality: Are entries dark enough for long-term archival?\n"
+            "- Spatial organization: Are entries within designated boxes/lines?\n\n"
+            "Return ONLY valid JSON:\n"
+            '{"operator":"...","overall_score":0-100,"grade":"A|B|C|D|F",'
+            '"field_scores":[{"field":"...","legibility_score":0-100,"issues":["..."]}],'
+            '"trends":{"strengths":["..."],"weaknesses":["..."]},'
+            '"training_recommendations":["..."],'
+            '"comparison_note":"...","risk_level":"low|medium|high"}'
+        ),
+    )
+
+
+@app.post("/api/handwriting-score")
+async def handwriting_score(
+    extraction_data: str = Form(...),
+    filename: str = Form(""),
+):
+    ext = json.loads(extraction_data)
+
+    # Get historical scores from memory for trend comparison
+    operator = ext.get("operator_initials", {})
+    op_val = operator.get("value", "unknown") if isinstance(operator, dict) else str(operator)
+    memory_history = await asyncio.to_thread(
+        recall_from_memory, f"handwriting quality for operator {op_val}"
+    )
+
+    agent = make_handwriting_agent()
+    prompt = (
+        f"Assess the handwriting quality for document: {filename}\n\n"
+        f"EXTRACTION WITH CONFIDENCE SCORES:\n{json.dumps(ext, indent=2)}\n\n"
+        f"HISTORICAL DATA FOR THIS OPERATOR:\n{memory_history or 'No previous data — first assessment for this operator.'}\n\n"
+        f"Provide a detailed handwriting quality score and training recommendations."
+    )
+
+    try:
+        raw = await asyncio.to_thread(call_strands_agent, agent, prompt)
+        return {"result": parse_json_response(raw)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Feature: Multi-Document Reconciliation
+# ---------------------------------------------------------------------------
+def make_reconciliation_agent() -> Agent:
+    return Agent(
+        model=make_model(),
+        system_prompt=(
+            "You are a Multi-Document Reconciliation Agent for pharmaceutical manufacturing.\n\n"
+            "You receive extracted data from multiple documents (BMR, QC Forms, Certificates of Analysis).\n"
+            "Cross-reference ALL documents to find discrepancies.\n\n"
+            "CHECKS:\n"
+            "1. Batch number consistency: Same batch number across all documents?\n"
+            "2. Product name match: Same product referenced everywhere?\n"
+            "3. Ingredient reconciliation: Do ingredients in BMR match QC test subjects?\n"
+            "4. Timestamp alignment: Are dates logical across document chain?\n"
+            "5. Operator cross-check: Are operators consistent or properly handed off?\n"
+            "6. Quantity verification: Do BMR quantities align with QC test results?\n\n"
+            "Return ONLY valid JSON:\n"
+            '{"documents_analyzed":[{"name":"...","type":"BMR|QC|CoA"}],'
+            '"matches":[{"field":"...","status":"match|mismatch|partial","values":{"doc1":"...","doc2":"..."},"notes":"..."}],'
+            '"discrepancies":[{"field":"...","severity":"minor|major|critical","description":"...","documents":["...","..."]}],'
+            '"reconciliation_score":0-100,'
+            '"overall_status":"reconciled|discrepancies_found|insufficient_data",'
+            '"summary":"..."}'
+        ),
+    )
+
+
+@app.post("/api/reconcile")
+async def reconcile_documents(
+    files: list[UploadFile] = File(None),
+    sample_names: str = Form(None),
+):
+    """Reconcile multiple documents — upload files or provide comma-separated sample names."""
+    extractions = []
+
+    # Handle uploaded files
+    if files:
+        for f in files:
+            if f.filename:
+                doc_bytes = await f.read()
+                doc_content = build_document_content(doc_bytes, f.filename)
+                agent = make_extraction_agent()
+                raw = await asyncio.to_thread(
+                    call_bedrock_direct, agent.system_prompt,
+                    [*doc_content, {"text": "Extract all fields from this pharmaceutical document. Return structured JSON."}]
+                )
+                ext = parse_json_response(raw)
+                extractions.append({"filename": f.filename, "extraction": ext})
+
+    # Handle sample names
+    if sample_names:
+        for name in [n.strip() for n in sample_names.split(",") if n.strip()]:
+            for folder in [WORKSHOP_DATA, KIRO_DATA]:
+                fp = folder / name
+                if fp.exists():
+                    doc_content = build_document_content(fp.read_bytes(), name)
+                    agent = make_extraction_agent()
+                    raw = await asyncio.to_thread(
+                        call_bedrock_direct, agent.system_prompt,
+                        [*doc_content, {"text": "Extract all fields from this pharmaceutical document. Return structured JSON."}]
+                    )
+                    ext = parse_json_response(raw)
+                    extractions.append({"filename": name, "extraction": ext})
+                    break
+
+    if len(extractions) < 2:
+        return {"error": "Need at least 2 documents to reconcile"}
+
+    agent = make_reconciliation_agent()
+    prompt = (
+        f"Reconcile the following {len(extractions)} pharmaceutical documents:\n\n"
+        + "\n\n".join(
+            f"DOCUMENT {i+1}: {e['filename']}\n{json.dumps(e['extraction'], indent=2)}"
+            for i, e in enumerate(extractions)
+        )
+        + "\n\nCross-reference all documents and report any discrepancies."
+    )
+
+    try:
+        raw = await asyncio.to_thread(call_strands_agent, agent, prompt)
+        return {"extractions": extractions, "reconciliation": parse_json_response(raw)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # Serve React build (production)
 # ---------------------------------------------------------------------------
 frontend_build = Path(__file__).resolve().parent.parent / "frontend" / "dist"
